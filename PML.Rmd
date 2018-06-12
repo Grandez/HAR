@@ -1,0 +1,202 @@
+---
+title: "Practice Machine Learning"
+subtitle    : Data Science Specialization
+author: "Javier Gonzalez <javier.gonzalez.grandez@gmail.com"
+date: "12 de junio de 2018"
+output: 
+   html_document:
+      number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+More information is available from the website here: [](http://groupware.les.inf.puc-rio.br/har). 
+
+# Environment
+
+This is the environment required to execute the process, we assume this document and datasets are in the same working directory and original datasets are called:
+
+- pml-training.csv
+- pml-testing.csv
+
+otherwise you must adjust this piece of code.
+
+```{r env, message=F}
+library(caret)
+library(e1071)
+library(randomForest)
+
+ds.training = 'pml-training.csv'
+ds.testing  = 'pml-testing.csv'
+# Minimum percentage of NAs in a column to remove
+MIN.NA <- .75
+
+setwd('P:/R/PML')  # Set the current environment
+```
+
+# Approach
+
+Our method to implement this machine is:
+
+1. Load the data and analyse to clean it up
+2. Identify relevant features and covariates, confounders, etc.
+3. Apply different models to identify which one provides more accuracy
+4. Improve the model chosen til get an enough accuracy
+5. Apply the model to test data
+
+# Cleaning up
+
+## Loading data
+
+```{r load1}
+# First load of file
+pml.base = read.csv(ds.training)
+# head(pml.base)   # Omitted for HTML page
+dim(pml.base)
+```
+
+
+Making this primer load of data we can see a lot of features as well as many missing or inconsistent values, mainly in the form of empty values but also as NA and DIV/0.
+
+So, in order to capture these values as NA we need to extend the na.string parameter
+
+```{r load2}
+NAS=c("", "NA", "#DIV/0!")
+pml.base = read.csv('pml-training.csv', na.string=NAS)
+prc.na = sum(is.na(pml.base)) / prod(dim(pml.base)) # check number of NA
+```
+
+Number of rows:               __`r nrow(pml.base)`__
+
+Number of columns:            __`r dim(pml.base)[2]`__
+
+Percentage of missing values: __`r prc.na * 100`__
+
+## Removing features
+
+To remove a part of these NA values we start removing features with an amount of NA values over an specific threshold.
+
+This threshold is stored into MIN.NA variable (see Environment):
+
+```{r cleanNA}
+# Calculate number of NA by column
+prc.na <- colSums(sapply(pml.base, is.na)) / nrow(pml.base)
+
+# Remove columns
+cols.ignore <- names(prc.na[prc.na > MIN.NA])
+pml.work <- pml.base[ , !(names(pml.base) %in% cols.ignore)]
+prc.na <- sum(is.na(pml.work)) / prod(dim(pml.work))
+
+```
+
+Number of columns:            __`r dim(pml.work)[2]`__
+
+Percentage of missing values: __`r prc.na * 100`__
+
+Great! We have removed all NA values and reduce significativally the number of features. That is, all these values are contained in some columns not along records and features.
+
+## Removing columns not useful for training
+
+There is not a code-book of dataset, so we have no information about all columns into dataset, but we know that:
+
+- __X__     Is an unique identifier
+- __user__  Is the name of user
+- __timestamps__ Are  not relevant because we don't analyse the timeline
+
+We remove these columns to reduce the size of dataset and create the base dataset for training the models.
+
+
+```{r cleanColumns}
+pml.base = pml.work[, -c(1:6)]
+```
+
+
+# Model Selection
+
+Using the base dataset we are obtained before, we'll prepare three models to check which of them could be more appropriate (upper accuracy) to prepare the machine. As prediction is a set of 10 classes we'll train these models:
+
+1. Support Vector Machine
+2. Random Forest
+3. K-nearest neighbors
+
+For train dataset we'll use the 75% of data
+
+
+```{r splitfile}
+v.train <- createDataPartition(pml.base$classe, p = 0.75, list = FALSE)
+pml.train <- pml.base[v.train,]
+pml.test  <- pml.base[-v.train,]
+```
+
+
+## Model 1: Support Vector Machine
+
+```{r svm}
+model.svm <- svm(classe~., data = pml.train)
+pred.svm <- predict(model.svm, newdata = pml.test)
+cm.svm = confusionMatrix(pred.svm, pml.test$classe)
+```
+
+## Model 2: Random Forest
+
+```{r rf}
+model.rf <- randomForest(classe~., data = pml.train, n.trees = 500)
+pred.rf <- predict(model.rf, newdata = pml.test)
+cm.rf = confusionMatrix(pred.rf, pml.test$classe)
+```
+
+## Model 3: K-nearest neighbors
+```{r knn}
+train.ctrl <- trainControl(method = "boot632", number = 5)
+model.knn <- train(classe~., data = pml.train, method = "knn",
+                  trControl = train.ctrl,
+                  preProcess = c("center", "scale"),
+                  tuneLength = 10)
+pred.knn <- predict (model.knn, newdata = pml.test)
+cm.knn = confusionMatrix(pred.knn, pml.test$classe)
+```
+
+## Results
+```{r results}
+df.res = rbind(cm.svm$overall, cm.rf$overall, cm.knn$overall)
+df.res = cbind(c("SVM", "RF", "KNN"), df.res)
+print(df.res[,c(1,2,4,5)])
+```
+
+As we can see, Random Forest has the bigger accuracy: __99.78%__
+
+### Random Forest - Confussion Matrix
+
+```{r plot, echo = F}
+p <- ggplot(data=as.data.frame(cm.rf$table), aes(x=Reference, y=Prediction)) 
+p = p + geom_tile(aes(fill = log(Freq)), colour = "white")
+p = p + scale_fill_gradient(low = "white", high = "steelblue")
+p = p + geom_text(aes(x = Reference, y = Prediction, label = Freq))
+p = p + theme(legend.position = "none")
+p
+```  
+
+### Random Forest - Sensitivity
+
+```{r t2, echo = F}
+cm.rf$byClass[,c(1,2,11)]
+```  
+
+# Prediction
+
+Using the Random Forest model for predict the test cases, the result is:
+
+```{r predict}
+# Create pml.test according pml.train
+pml.test.base =  read.csv(ds.testing, na.string=NAS)
+pml.test =  pml.test.base[ , names(pml.test.base) %in% colnames(pml.train)]
+pred.test <- predict(model.rf, newdata = pml.test)
+print(pred.test)
+```  
+
